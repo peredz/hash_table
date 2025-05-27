@@ -20,25 +20,17 @@ public:
     }
 };
 
-int NumOfDigits(int number)
-{
-    int i = 0;
-    while (std::pow(10, i) < number)
-    {
-        i++;
-    }
-    return i;
-}
-
 template <typename T = Record>
 int HashFunctionQuadratic(T record, int table_size)
 {
     int hash_result = record.getKey();
-    hash_result *= hash_result;
-    int numOfDigitsInHash = NumOfDigits(hash_result);
-    int numOfDigitsInSize = NumOfDigits(table_size);
-    hash_result = ((hash_result % (int)pow(10, numOfDigitsInHash - numOfDigitsInSize / 2 + 1)) / (int)pow(10, numOfDigitsInSize / 2)) % table_size;
-    return hash_result;
+    std::string squared = std::to_string(hash_result);
+    int len = squared.size();
+    int mid = len / 2;
+    int slice_size = std::to_string(table_size).size();
+
+    std::string middle = squared.substr(std::max(0, mid - slice_size / 2), slice_size);
+    return std::stoi(middle) % table_size;
 }
 
 template <typename T = Record>
