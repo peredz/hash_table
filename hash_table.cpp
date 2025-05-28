@@ -232,6 +232,7 @@ private:
         {
             if (shouldMarkDeleted)
                 hashTable[initialIndex].markAsDeleted();
+            else std::cout << "It took 1 step to finde the Record. Line number: " << hashTable[initialIndex].data.lineNumber << std::endl;
             return hashTable[initialIndex];
         }
 
@@ -244,6 +245,7 @@ private:
             {
                 if (shouldMarkDeleted)
                     hashTable[currentIndex].markAsDeleted();
+                else std::cout << "It took " << attempt + 1 << " steps to finde the Record. Line number: " << hashTable[initialIndex].data.lineNumber << std::endl;
                 return hashTable[currentIndex];
             }
             currentIndex = resolveCollision(initialIndex, attempt) % currentCapacity;
@@ -297,21 +299,6 @@ private:
         int number;
         std::string fio;
 
-        std::cout << "[Enter key (number part) for search] ";
-        if (!(std::cin >> number))
-        {
-            std::cerr << "[Error] Invalid number format" << std::endl;
-            return;
-        }
-
-        std::cout << "[Enter key (fio part) for search] ";
-        std::cin.ignore(); // Очистка буфера перед чтением строки
-        if (!std::getline(std::cin, fio))
-        {
-            std::cerr << "[Error] Failed to read name" << std::endl;
-            return;
-        }
-
         // Чтение данных из файла
         int successfullyRead = 0;
         Record newRecord;
@@ -347,8 +334,8 @@ private:
 
     void saveDataToFile(const std::string &fileName)
     {
-        std::ofstream output(fileName);
-        if (!output.is_open())
+        std::ofstream output(fileName, std::ios::out | std::ios::trunc);
+        if (!output)
         {
             std::cerr << "[Error] Failed to open file: " << fileName << std::endl;
             return;
@@ -571,7 +558,34 @@ void tests()
     }
 }
 
+void fileTests()
+{
+    HashTable<Record> parkingSystem;
+    std::cout << "Downloading data from file:\n";
+    
+    std::string inputFileName = "input.txt";
+    parkingSystem.loadData(inputFileName);
+
+    std::string name = "AnthonyHarris";
+    int searchId = 888;
+    std::cout << "Finding record: \""  << name << " " << searchId << "\"\n";
+    int lineNumber = parkingSystem.find(name, searchId);
+
+    if (lineNumber != -1)
+    {
+        std::cout << "Found client " <<name << " id: " << searchId << " at line " << lineNumber << "\n";
+    }
+    else
+    {
+        std::cout << "Client " <<name << " id: " << searchId  << " not found\n";
+    }
+
+    std::string outputFileName = "output.txt";
+    parkingSystem.saveTable(outputFileName);
+}
+
 int main()
 {
-    tests();
+    // tests();
+    fileTests();
 }
