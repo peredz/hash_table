@@ -2,404 +2,576 @@
 #include <cmath>
 #include <string>
 #include <iomanip>
+#include <fstream>
 
 class Record
 {
 public:
-    std::string fio;
-    std::string carInfo;
+    std::string fullName;
+    std::string carModel;
     std::string time;
     int lineNumber;
-    int number;
+    int clientId;
 
-    Record() : fio(""), carInfo(""), time(""), number(0), lineNumber(-1) {}
+    Record() : fullName(""), carModel(""), time(""), clientId(0), lineNumber(-1) {}
 
-    Record(std::string fio_, int number_) : fio(std::move(fio_)), carInfo(""), time(""), number(number_), lineNumber(-1) {}
+    Record(std::string name, int id)
+        : fullName(std::move(name)), carModel(""), time(""), clientId(id), lineNumber(-1) {}
 
-    Record(std::string fio_, std::string carInfo_, std::string time_, int number_, int lineNumber_ = -1)
-        : fio(std::move(fio_)), carInfo(std::move(carInfo_)), time(std::move(time_)), number(number_), lineNumber(lineNumber_) {}
+    Record(std::string name, std::string car, std::string timeStr, int id, int lineNum = -1)
+        : fullName(std::move(name)), carModel(std::move(car)),
+          time(std::move(timeStr)), clientId(id), lineNumber(lineNum) {}
 
-    int getKey() const
+    int calculateHashKey() const
     {
         int key = 0;
-        for (char c : fio)
+        for (char c : fullName)
         {
             key += static_cast<int>(c);
         }
-        return key + number;
+        return key + clientId;
     }
 
-    bool compareKeys(const Record &record) const
+    bool isSameRecord(const Record &other) const
     {
-        return (fio == record.fio && number == record.number);
+        return (fullName == other.fullName && clientId == other.clientId);
     }
 
     void printKey() const
     {
-        std::cout << fio << " " << number;
+        std::cout << fullName << " " << clientId;
     }
 
-    void printRest() const
+    void printDetails() const
     {
-        std::cout << " " << carInfo;
+        std::cout << " " << carModel;
     }
 
     void print() const
     {
         printKey();
-        printRest();
+        printDetails();
     }
 };
 
 template <typename T = Record>
-int MidSquareHash(T record, int tableSize)
+int midSquareHash(const T &record, int tableSize)
 {
-    int key = record.getKey();
+    int key = record.calculateHashKey();
     int squared = key * key;
     std::string squaredStr = std::to_string(squared);
-    int len = squaredStr.size();
-    int mid = len / 2;
-    int sliceSize = std::to_string(tableSize).size();
+    int length = squaredStr.size();
+    int middle = length / 2;
+    int digitsNeeded = std::to_string(tableSize).size();
 
-    std::string middle = squaredStr.substr(std::max(0, mid - sliceSize / 2), sliceSize);
-    if (middle.empty())
+    std::string middleDigits = squaredStr.substr(std::max(0, middle - digitsNeeded / 2), digitsNeeded);
+    if (middleDigits.empty())
         return 0;
 
-    return std::stoi(middle) % tableSize;
+    return std::stoi(middleDigits) % tableSize;
 }
 
 template <typename T = Record>
-struct PrimaryHash
+struct PrimaryHashFunction
 {
-    int operator()(T record, int tableSize) const
+    int operator()(const T &record, int tableSize) const
     {
-        return MidSquareHash(record, tableSize);
+        return midSquareHash(record, tableSize);
     }
 };
 
-struct QuadraticProbing
+struct QuadraticProbingFunction
 {
 private:
-    int c1 = 1;
-    int c2 = 2;
+    const int linearCoefficient = 1;
+    const int quadraticCoefficient = 2;
 
 public:
-    int operator()(int hash, int j) const
+    int operator()(int hash, int attempt) const
     {
-        return hash + c1 * j + c2 * j * j;
+        return hash + linearCoefficient * attempt + quadraticCoefficient * attempt * attempt;
     }
 };
 
-template <typename T = Record, class Hash1 = PrimaryHash<T>, class Hash2 = QuadraticProbing>
+template <typename T = Record,
+          class PrimaryHash = PrimaryHashFunction<T>,
+          class CollisionResolver = QuadraticProbingFunction>
 class HashTable
 {
 public:
-    class Node
+    struct TableEntry
     {
-    public:
-        T value;
-        char status; // 0 = empty, 1 = occupied, 2 = deleted
+        T data;
+        char state; // 0 = empty, 1 = occupied, 2 = deleted
 
-        Node() : status(0) {}
-        Node(T val) : value(std::move(val)), status(1) {}
-        void disable()
+        TableEntry() : state(0) {}
+        TableEntry(T value) : data(std::move(value)), state(1) {}
+
+        void markAsDeleted()
         {
-            value.lineNumber = -1;
-            status = 2;
+            data.lineNumber = -1;
+            state = 2;
         }
     };
 
 private:
-    using ValueType = T;
+    static const int INITIAL_CAPACITY;
+    static constexpr double MAX_LOAD_FACTOR = 0.75;
+    static constexpr double MIN_LOAD_FACTOR = 0.25;
 
-    static const int DEFAULT_SIZE = 8;
-    static constexpr double LOAD_FACTOR = 0.75;
-    int bufferSize;
-    int size;
-    int usedSlots;
-    Node *table;
+    int currentCapacity;
+    int totalEntries;
+    int occupiedSlots;
+    TableEntry *hashTable;
 
-    bool insert(ValueType value, bool rehash = false)
+    bool insertRecord(T record, bool isRehashing = false)
     {
-        Hash1 h1;
-        Hash2 h2;
-        int initialIndex = h1(value, bufferSize);
-        Node newNode(std::move(value));
+        PrimaryHash primaryHash;
+        CollisionResolver resolveCollision;
 
-        if (table[initialIndex].status != 1)
+        int initialIndex = primaryHash(record, currentCapacity);
+        TableEntry newEntry(std::move(record));
+
+        if (hashTable[initialIndex].state != 1)
         {
-            if (table[initialIndex].status == 0)
+            if (hashTable[initialIndex].state == 0)
             {
-                size++;
+                totalEntries++;
             }
-            if (!rehash)
-                usedSlots++;
-            table[initialIndex] = newNode;
-            if (!rehash)
-                checkForResize();
+            if (!isRehashing)
+                occupiedSlots++;
+            hashTable[initialIndex] = newEntry;
+            if (!isRehashing)
+                checkLoadFactor();
             return true;
         }
 
-        int j = 1;
-        int probeIndex = initialIndex;
-        while (table[probeIndex].status == 1)
+        int attempt = 1;
+        int currentIndex = initialIndex;
+        while (hashTable[currentIndex].state == 1)
         {
-            if (table[probeIndex].value.compareKeys(newNode.value))
+            if (hashTable[currentIndex].data.isSameRecord(newEntry.data))
             {
                 return false;
             }
-            probeIndex = h2(initialIndex, j) % bufferSize;
-            j++;
+            currentIndex = resolveCollision(initialIndex, attempt) % currentCapacity;
+            attempt++;
         }
 
-        table[probeIndex] = newNode;
+        hashTable[currentIndex] = newEntry;
 
-        if (table[probeIndex].status == 0)
+        if (hashTable[currentIndex].state == 0)
         {
-            size++;
+            totalEntries++;
         }
-        if (!rehash)
-            usedSlots++;
-        if (!rehash)
-            checkForResize();
+        if (!isRehashing)
+            occupiedSlots++;
+        if (!isRehashing)
+            checkLoadFactor();
         return true;
     }
 
-    void checkForResize()
+    void checkLoadFactor()
     {
-        double actualLoadPercentage = double(usedSlots) / double(bufferSize);
+        double currentLoad = double(occupiedSlots) / double(currentCapacity);
 
-        Node *old_table = table;
-        int old_size = bufferSize;
+        TableEntry *oldTable = hashTable;
+        int oldCapacity = currentCapacity;
 
-        if (actualLoadPercentage > LOAD_FACTOR)
+        if (currentLoad > MAX_LOAD_FACTOR)
         {
-            resize(true);
+            resizeTable(true);
         }
-        else if (actualLoadPercentage < (1 - LOAD_FACTOR))
+        else if (currentLoad < MIN_LOAD_FACTOR && currentCapacity > INITIAL_CAPACITY)
         {
-            resize(false);
+            resizeTable(false);
         }
         else
         {
             return;
         }
 
-        table = new Node[bufferSize];
-
-        rehash(old_table, old_size);
-        delete[] old_table;
+        hashTable = new TableEntry[currentCapacity];
+        rehashTable(oldTable, oldCapacity);
+        delete[] oldTable;
     }
 
-    void resize(bool grow)
+    void resizeTable(bool shouldExpand)
     {
-        if (grow)
+        if (shouldExpand)
         {
-            bufferSize = bufferSize * 2;
-            return;
+            currentCapacity *= 2;
         }
-        if (bufferSize > DEFAULT_SIZE)
+        else
         {
-            bufferSize = bufferSize / 2;
+            currentCapacity = std::max(INITIAL_CAPACITY, currentCapacity / 2);
         }
     }
 
-    void rehash(Node *old_table, int old_size)
+    void rehashTable(TableEntry *oldTable, int oldCapacity)
     {
-        for (int i = 0; i < old_size; i++)
+        for (int i = 0; i < oldCapacity; i++)
         {
-            if (old_table[i].status == 1)
+            if (oldTable[i].state == 1)
             {
-                insert(old_table[i].value, true);
+                insertRecord(oldTable[i].data, true);
             }
         }
-        size = usedSlots;
+        totalEntries = occupiedSlots;
     }
 
-    Node findeNode(ValueType value, bool needToBeDeteleted = false)
+    TableEntry findEntry(const T &record, bool shouldMarkDeleted = false)
     {
-        Hash1 h1;
-        Hash2 h2;
-        int initialIndex = h1(value, bufferSize);
+        PrimaryHash primaryHash;
+        CollisionResolver resolveCollision;
 
-        if (table[initialIndex].value.compareKeys(value) && table[initialIndex].status == 1)
+        int initialIndex = primaryHash(record, currentCapacity);
+
+        if (hashTable[initialIndex].data.isSameRecord(record) &&
+            hashTable[initialIndex].state == 1)
         {
-            if (needToBeDeteleted)
-                table[initialIndex].disable();
-            return table[initialIndex];
+            if (shouldMarkDeleted)
+                hashTable[initialIndex].markAsDeleted();
+            return hashTable[initialIndex];
         }
 
-        int j = 1;
-        int probeIndex = initialIndex;
-        while (table[probeIndex].status != 0)
+        int attempt = 1;
+        int currentIndex = initialIndex;
+        while (hashTable[currentIndex].state != 0)
         {
-            if (table[probeIndex].value.compareKeys(value) && table[probeIndex].status == 1)
+            if (hashTable[currentIndex].data.isSameRecord(record) &&
+                hashTable[currentIndex].state == 1)
             {
-                if (needToBeDeteleted)
-                    table[probeIndex].disable();
-                return table[probeIndex];
+                if (shouldMarkDeleted)
+                    hashTable[currentIndex].markAsDeleted();
+                return hashTable[currentIndex];
             }
-            probeIndex = h2(initialIndex, j) % bufferSize;
-            j++;
+            currentIndex = resolveCollision(initialIndex, attempt) % currentCapacity;
+            attempt++;
         }
 
-        return Node();
+        return TableEntry();
     }
 
-    bool deteleElement(Record recordToDelete)
+    bool removeRecord(const T &record)
     {
-        Node nodeToDelete = findeNode(recordToDelete, true);
+        TableEntry foundEntry = findEntry(record, true);
 
-        if (nodeToDelete.status == 0)
+        if (foundEntry.state == 0)
         {
             return false;
         }
 
-        usedSlots--;
-        checkForResize();
+        occupiedSlots--;
+        checkLoadFactor();
         return true;
     }
 
-public:
-    HashTable() : bufferSize(DEFAULT_SIZE), size(0), usedSlots(0)
+    void loadDataFromFile(const std::string &fileName)
     {
-        table = new Node[DEFAULT_SIZE];
+        // Проверка возможности открытия файла
+        std::ifstream input(fileName);
+        if (!input.is_open())
+        {
+            std::cerr << "[Error] Failed to open file: " << fileName << std::endl;
+            return;
+        }
+
+        // Ввод количества записей с проверкой
+        int count;
+        std::cout << "[Enter count of lines to read] ";
+        if (!(std::cin >> count) || count <= 0)
+        {
+            std::cerr << "[Error] Invalid count value" << std::endl;
+            return;
+        }
+
+        // Проверка, что файл не пустой
+        if (input.peek() == std::ifstream::traits_type::eof())
+        {
+            std::cerr << "[Error] File is empty" << std::endl;
+            return;
+        }
+
+        // Ввод ключей для поиска
+        int number;
+        std::string fio;
+
+        std::cout << "[Enter key (number part) for search] ";
+        if (!(std::cin >> number))
+        {
+            std::cerr << "[Error] Invalid number format" << std::endl;
+            return;
+        }
+
+        std::cout << "[Enter key (fio part) for search] ";
+        std::cin.ignore(); // Очистка буфера перед чтением строки
+        if (!std::getline(std::cin, fio))
+        {
+            std::cerr << "[Error] Failed to read name" << std::endl;
+            return;
+        }
+
+        // Чтение данных из файла
+        int successfullyRead = 0;
+        Record newRecord;
+        for (int i = 0; i < count; i++)
+        {
+            if (!(input >> newRecord.fullName >> newRecord.carModel >> newRecord.time >> newRecord.clientId))
+            {
+                if (input.eof())
+                {
+                    std::cerr << "[Warning] Reached end of file after reading " << successfullyRead
+                              << " records (requested " << count << ")" << std::endl;
+                }
+                else
+                {
+                    std::cerr << "[Error] Failed to read record #" << i + 1
+                              << " (wrong data format)" << std::endl;
+                }
+                break;
+            }
+
+            newRecord.lineNumber = i + 1;
+            if (!insertRecord(newRecord))
+            {
+                std::cerr << "[Warning] Failed to insert record #" << i + 1
+                          << " (possible duplicate)" << std::endl;
+                continue;
+            }
+            successfullyRead++;
+        }
+
+        std::cout << "Successfully loaded " << successfullyRead << " records from file: " << fileName << std::endl;
+    }
+
+    void saveDataToFile(const std::string &fileName)
+    {
+        std::ofstream output(fileName);
+        if (!output.is_open())
+        {
+            std::cerr << "[Error] Failed to open file: " << fileName << std::endl;
+            return;
+        };
+        formatTablePrint(output);
+        output.close();
+    }
+
+    void formatTablePrint(std::ostream& stream = std::cout) const
+    {
+        stream << std::left;
+        stream << std::setw(6) << "Index"
+               << std::setw(25) << "Key (Name + ID)"
+               << std::setw(25) << "Car Model"
+               << std::setw(12) << "Status" << "\n";
+
+        stream << std::string(68, '-') << "\n";
+
+        for (int i = 0; i < currentCapacity; ++i)
+        {
+            stream << std::setw(6) << i;
+
+            if (hashTable[i].state == 0)
+            {
+                stream << std::setw(25) << "no data"
+                       << std::setw(25) << "-"
+                       << std::setw(12) << "empty";
+            }
+            else if (hashTable[i].state == 1)
+            {
+                std::string keyStr = hashTable[i].data.fullName + " " +
+                                     std::to_string(hashTable[i].data.clientId);
+                stream << std::setw(25) << keyStr
+                       << std::setw(25) << hashTable[i].data.carModel
+                       << std::setw(12) << "occupied";
+            }
+            else // state == 2
+            {
+                std::string keyStr = hashTable[i].data.fullName + " " +
+                                     std::to_string(hashTable[i].data.clientId);
+                stream << std::setw(25) << keyStr
+                       << std::setw(25) << "-"
+                       << std::setw(12) << "deleted";
+            }
+            stream << "\n";
+        }
+        stream << "Capacity: " << currentCapacity
+               << ", Occupied: " << occupiedSlots
+               << ", Load factor: " << std::fixed << std::setprecision(2)
+               << (static_cast<double>(occupiedSlots) / currentCapacity) << "\n\n";
+    }
+
+public:
+    HashTable() : currentCapacity(INITIAL_CAPACITY),
+                  totalEntries(0),
+                  occupiedSlots(0)
+    {
+        hashTable = new TableEntry[INITIAL_CAPACITY];
     }
 
     ~HashTable()
     {
-        delete[] table;
+        delete[] hashTable;
     }
 
     void print() const
     {
-        std::cout << std::left;
-        std::cout << std::setw(6) << "Index"
-                  << std::setw(25) << "Key (FIO + Number)"
-                  << std::setw(25) << "Car Info"
-                  << std::setw(12) << "Status" << "\n";
-
-        std::cout << std::string(68, '-') << "\n";
-
-        for (int i = 0; i < bufferSize; ++i)
-        {
-            std::cout << std::setw(6) << i;
-
-            if (table[i].status == 0)
-            {
-                std::cout << std::setw(25) << "no data"
-                          << std::setw(25) << "-"
-                          << std::setw(12) << "empty";
-            }
-            else if (table[i].status == 1)
-            {
-                std::string keyStr = table[i].value.fio + " " + std::to_string(table[i].value.number);
-                std::cout << std::setw(25) << keyStr
-                          << std::setw(25) << table[i].value.carInfo
-                          << std::setw(12) << "occupied";
-            }
-            else // status == 2
-            {
-                std::string keyStr = table[i].value.fio + " " + std::to_string(table[i].value.number);
-                std::cout << std::setw(25) << keyStr
-                          << std::setw(25) << "-"
-                          << std::setw(12) << "deleted";
-            }
-            std::cout << "\n";
-        }
-        std::cout << "Buffer size: " << bufferSize
-                  << ", Used slots: " << usedSlots
-                  << ", Load factor: " << std::fixed << std::setprecision(2)
-                  << (static_cast<double>(usedSlots) / bufferSize) << "\n\n";
+        formatTablePrint();
     }
 
     bool add(const Record &record)
     {
-        return insert(record);
+        return insertRecord(record);
     }
 
-    int find(const std::string &fio, int number)
+    int find(const std::string &name, int id)
     {
-        Record recordToFinde(fio, number);
-        return findeNode(recordToFinde).value.lineNumber;
+        Record recordToFind(name, id);
+        return findEntry(recordToFind).data.lineNumber;
     }
 
-    bool remove(const std::string &fio, int number)
+    bool remove(const std::string &name, int id)
     {
-        Record recordToDelete(fio, number);
-        return deteleElement(recordToDelete);
+        Record recordToRemove(name, id);
+        return removeRecord(recordToRemove);
+    }
+
+    void loadData(const std::string &fileName)
+    {
+        loadDataFromFile(fileName);
+    }
+
+    void saveTable(const std::string &fileName)
+    {
+        saveDataToFile(fileName);
     }
 };
 
-int main()
+template <typename T, class PrimaryHash, class CollisionResolver>
+const int HashTable<T, PrimaryHash, CollisionResolver>::INITIAL_CAPACITY = 8;
+
+void tests()
 {
-    HashTable<Record> table;
-    table.print();
-    std::cout << std::endl;
+    HashTable<Record> parkingSystem;
+    std::cout << "Initial empty parking system:\n";
+    parkingSystem.print();
+
+    // Тест 1: Добавление первых 10 записей
+    std::cout << "\n=== Test 1: Adding initial 10 records ===\n";
     for (int i = 0; i < 10; i++)
     {
-        if (table.add(Record("JohnSmith", "ToyotaCamry", "08:30", 490 + i)))
+        std::string carModel = "ToyotaCamry";
+        std::string time = "08:" + std::to_string(30 + i);
+        int clientId = 490 + i;
+
+        if (parkingSystem.add(Record("JohnSmith", carModel, time, clientId)))
         {
-            std::cout << "Added ToyotaCamry " << 490 + i << ":\n";
+            std::cout << "Added: JohnSmith (ID: " << clientId << ") at " << time << "\n";
         }
         else
-            std::cout << "Error occurred while adding\n";
+        {
+            std::cout << "[Error] Failed to add client " << clientId << "\n";
+        }
     }
-    table.print();
+    std::cout << "\nParking system after adding 10 records:\n";
+    parkingSystem.print();
 
-    if (table.add(Record("JohnSmith", "ToyotaCamry", "08:30", 493)))
+    // Тест 2: Попытка добавить дубликат
+    std::cout << "\n=== Test 2: Trying to add duplicate record ===\n";
+    int duplicateId = 493;
+    if (parkingSystem.add(Record("JohnSmith", "ToyotaCamry", "08:33", duplicateId)))
     {
-        std::cout << "Added " << 493 << ":\n";
+        std::cout << "Unexpectedly added duplicate ID " << duplicateId << "\n";
     }
     else
-        std::cout << "\n\nError occurred while adding\n";
-    table.print();
+    {
+        std::cout << "Correctly rejected duplicate ID " << duplicateId << "\n";
+    }
+    parkingSystem.print();
 
+    // Тест 3: Удаление нескольких записей (нечетные ID в диапазоне 495-501)
+    std::cout << "\n=== Test 3: Removing selected records ===\n";
     for (int i = 5; i < 12; i += 2)
     {
-        if (table.remove("JohnSmith", 490 + i))
+        int clientId = 490 + i;
+        if (parkingSystem.remove("JohnSmith", clientId))
         {
-            std::cout << "\nJohnSmith - " << 490 + i << " was successfully removed\n\r";
+            std::cout << "Successfully removed client " << clientId << "\n";
         }
         else
-            std::cout << "\n\nError occurred while removing\n";
-        table.print();
+        {
+            std::cout << "[Error] Failed to remove client " << clientId << "\n";
+        }
+        parkingSystem.print();
     }
 
+    // Тест 4: Удаление первых 5 записей
+    std::cout << "\n=== Test 4: Removing first 5 records ===\n";
     for (int i = 0; i < 5; i++)
     {
-        if (table.remove("JohnSmith", 490 + i))
+        int clientId = 490 + i;
+        if (parkingSystem.remove("JohnSmith", clientId))
         {
-            std::cout << "\nJohnSmith - " << 490 + i << " was successfully removed\n\r";
+            std::cout << "Successfully removed client " << clientId << "\n";
         }
         else
-            std::cout << "\n\nError occurred while removing\n";
-        table.print();
+        {
+            std::cout << "[Error] Failed to remove client " << clientId << "\n";
+        }
+        parkingSystem.print();
     }
 
+    // Тест 5: Массовое добавление 100 записей
+    std::cout << "\n=== Test 5: Adding 100 new records ===\n";
     for (int i = 0; i < 100; i++)
     {
-        if (table.add(Record("JohnSmith", "ToyotaCamry", "08:30", 490 + i)))
+        int clientId = 490 + i;
+        std::string time = "09:" + std::to_string(i % 60);
+
+        if (parkingSystem.add(Record("JohnSmith", "ToyotaCamry", time, clientId)))
         {
-            std::cout << "Added ToyotaCamry " << 490 + i << ":\n";
+            if (i % 25 == 0)
+                std::cout << "Added client " << clientId << "...\n";
         }
         else
-            std::cout << "Error occurred while adding\n";
+        {
+            std::cout << "[Error] Failed to add client " << clientId << "\n";
+        }
     }
-    table.print();
+    std::cout << "Finished adding 100 records\n";
+    parkingSystem.print();
 
+    // Тест 6: Удаление диапазона записей (ID 530-545)
+    std::cout << "\n=== Test 6: Removing range of records (IDs 530-545) ===\n";
     for (int i = 40; i < 55; i++)
     {
-        if (table.remove("JohnSmith", 490 + i))
+        int clientId = 490 + i;
+        if (parkingSystem.remove("JohnSmith", clientId))
         {
-            std::cout << "\nJohnSmith - " << 490 + i << " was successfully removed\n\r";
+            std::cout << "Removed client " << clientId << "\n";
         }
         else
-            std::cout << "\n\nError occurred while removing\n";
+        {
+            std::cout << "[Error] Client " << clientId << " not found\n";
+        }
     }
-    table.print();
+    parkingSystem.print();
 
-    // 231   JohnSmith 541            ToyotaCamry              occupied
-    // не удалило, хотя должно было и не писало ошибки
-    return 0;
+    // Тест 7: Поиск конкретной записи
+    std::cout << "\n=== Test 7: Searching for specific record ===\n";
+    int searchId = 541;
+    int lineNumber = parkingSystem.find("JohnSmith", searchId);
+    if (lineNumber != -1)
+    {
+        std::cout << "Found client " << searchId << " at line " << lineNumber << "\n";
+    }
+    else
+    {
+        std::cout << "Client " << searchId << " not found\n";
+    }
+}
+
+int main()
+{
+    tests();
 }
